@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-price-prediction-service
+  namespace: trading-bot-testing
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: fake-price-prediction-service
+  template:
+    metadata:
+      name: fake-price-prediction-service
+      labels:
+        app: fake-price-prediction-service
+    spec:
+      containers:
+        - name: fake-price-prediction-service
+          image: luigisr03/fake-price-prediction-service:price-reference-v1
+          imagePullPolicy: Always
+          env:
+            - name: RABBITMQ_HOST
+              value: rabbitmq
+            - name: RABBITMQ_PORT
+              value: "5672"
+            - name: RABBITMQ_USER
+              value: trading-bot-dev
+            - name: RABBITMQ_VHOST
+              value: "trading-bot-vhost"
+            - name: RABBITMQ_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: news-ingestion-service-secret
+                  key: SPRING_RABBITMQ_PASSWORD
+            - name: MOCK_PREDICTION_OVERRIDES
+              value: '{"BUYOK":0.9,"BUYLOW":0.9,"HOLD":0.6,"SELLOK":0.1,"SELLNONE":0.1,"BUYA":0.9,"BUYB":0.9,"LOWA":0.9,"LOWB":0.9,"HOLDA":0.6,"HOLDB":0.6,"SELLA":0.1,"SELLB":0.1,"SELLNONEA":0.1,"SELLNONEB":0.1}'

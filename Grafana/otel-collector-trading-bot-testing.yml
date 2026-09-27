@@ -1,0 +1,132 @@
+# Configuration for the existing kube-system/otel-collector DaemonSet.
+#
+# Scope: container stdout/stderr logs from the business and measurement namespaces.
+# Credentials are supplied at runtime through the grafana-cloud-logs Secret;
+# do not place them in this file or in the collector ConfigMap.
+receivers:
+  filelog/trading-bot-namespaces:
+    include:
+      - /var/log/pods/trading-bot-testing_*/*/*.log
+      - /var/log/pods/trading-bot-measurement_*/*/*.log
+    exclude:
+      - /var/log/pods/*/otel-collector/*.log
+    start_at: end
+    include_file_path: true
+    include_file_name: false
+    operators:
+      - type: router
+        id: get-format
+        routes:
+          - output: parser-docker
+            expr: 'body matches "^\\{"'
+          - output: parser-crio
+            expr: 'body matches "^[^ Z]+ "'
+          - output: parser-containerd
+            expr: 'body matches "^[^ Z]+Z"'
+      - type: regex_parser
+        id: parser-crio
+        regex: '^(?P<time>[^ Z]+) (?P<stream>stdout|stderr) (?P<logtag>[^ ]*) ?(?P<log>.*)$'
+        output: extract-metadata-from-filepath
+        timestamp:
+          parse_from: attributes.time
+          layout_type: gotime
+          layout: '2006-01-02T15:04:05.999999999Z07:00'
+      - type: regex_parser
+        id: parser-containerd
+        regex: '^(?P<time>[^ ^Z]+Z) (?P<stream>stdout|stderr) (?P<logtag>[^ ]*) ?(?P<log>.*)$'
+        output: extract-metadata-from-filepath
+        timestamp:
+          parse_from: attributes.time
+          layout: '%Y-%m-%dT%H:%M:%S.%LZ'
+      - type: json_parser
+        id: parser-docker
+        output: extract-metadata-from-filepath
+        timestamp:
+          parse_from: attributes.time
+          layout: '%Y-%m-%dT%H:%M:%S.%LZ'
+      - type: regex_parser
+        id: extract-metadata-from-filepath
+        regex: '^.*\/(?P<namespace>[^_]+)_(?P<pod_name>[^_]+)_(?P<uid>[a-f0-9\-]{36})\/(?P<container_name>[^\._]+)\/(?P<restart_count>\d+)\.log$'
+        parse_from: attributes["log.file.path"]
+        cache:
+          size: 32
+      - type: move
+        from: attributes.log
+        to: body
+      - type: move
+        from: attributes.stream
+        to: attributes["log.iostream"]
+      - type: move
+        from: attributes.container_name
+        to: resource["k8s.container.name"]
+      - type: move
+        from: attributes.namespace
+        to: resource["k8s.namespace.name"]
+      - type: move
+        from: attributes.pod_name
+        to: resource["k8s.pod.name"]
+      - type: move
+        from: attributes.restart_count
+        to: resource["k8s.container.restart_count"]
+      - type: move
+        from: attributes.uid
+        to: resource["k8s.pod.uid"]
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 160
+    spike_limit_mib: 40
+  resource/cluster:
+    attributes:
+      - key: k8s_cluster_name
+        value: trading-bot
+        action: insert
+  k8sattributes:
+    auth_type: serviceAccount
+    passthrough: false
+    extract:
+      metadata:
+        - k8s.pod.name
+        - k8s.pod.uid
+        - k8s.deployment.name
+        - k8s.namespace.name
+        - k8s.node.name
+        - k8s.pod.start_time
+    pod_association:
+      - sources:
+          - from: resource_attribute
+            name: k8s.pod.uid
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+    send_batch_max_size: 1024
+
+extensions:
+  basicauth/grafana:
+    client_auth:
+      username: ${env:GRAFANA_CLOUD_OTLP_USERNAME}
+      password: ${env:GRAFANA_CLOUD_OTLP_TOKEN}
+
+exporters:
+  otlphttp/grafana:
+    endpoint: ${env:GRAFANA_CLOUD_OTLP_ENDPOINT}
+    auth:
+      authenticator: basicauth/grafana
+    sending_queue:
+      enabled: true
+      num_consumers: 2
+      queue_size: 100
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 5m
+
+service:
+  extensions: [basicauth/grafana]
+  pipelines:
+    logs:
+      receivers: [filelog/trading-bot-namespaces]
+      processors: [memory_limiter, resource/cluster, k8sattributes, batch]
+      exporters: [otlphttp/grafana]

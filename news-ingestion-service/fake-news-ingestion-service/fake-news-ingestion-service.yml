@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-news-ingestion-service
+  namespace: trading-bot-testing
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fake-news-ingestion-service
+  template:
+    metadata:
+      labels:
+        app: fake-news-ingestion-service
+    spec:
+      containers:
+        - name: fake-news-ingestion-service
+          image: luigisr03/fake-news-ingestion-service:business-logic-v1
+          imagePullPolicy: Always
+          env:
+            - name: SPRING_RABBITMQ_HOST
+              value: rabbitmq
+            - name: SPRING_RABBITMQ_PORT
+              value: "5672"
+            - name: SPRING_RABBITMQ_VIRTUAL_HOST
+              value: trading-bot-vhost
+            - name: SPRING_RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: news-ingestion-service-secret
+                  key: SPRING_RABBITMQ_PASSWORD

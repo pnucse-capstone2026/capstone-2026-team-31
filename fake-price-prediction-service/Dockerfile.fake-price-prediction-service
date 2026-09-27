@@ -1,0 +1,12 @@
+# syntax=docker/dockerfile:1.7
+# Build with Docker Buildx using --platform=linux/amd64 for a Linux x86_64 image.
+FROM --platform=linux/amd64 python:3.13-slim
+
+WORKDIR /fake-price-prediction-service
+
+COPY fake-price-prediction-service-requirements.txt .
+RUN pip install --no-cache-dir -r fake-price-prediction-service-requirements.txt
+
+COPY fake-price-prediction-service.py .
+
+ENTRYPOINT ["python3", "fake-price-prediction-service.py"]

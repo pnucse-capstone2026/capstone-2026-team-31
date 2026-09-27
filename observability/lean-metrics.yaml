@@ -1,0 +1,405 @@
+# Lean Grafana Cloud metrics collection for the trading-bot cluster.
+#
+# It intentionally does NOT install Grafana, Prometheus, Alertmanager,
+# node-exporter, tracing, profiling, cost monitoring, or log collection.
+#
+# Rollback: kubectl delete -f observability/lean-metrics.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-state-metrics
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/part-of: trading-bot-observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: trading-bot-kube-state-metrics
+  labels:
+    app.kubernetes.io/part-of: trading-bot-observability
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods", "namespaces", "resourcequotas", "limitranges", "persistentvolumeclaims"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: trading-bot-kube-state-metrics
+  labels:
+    app.kubernetes.io/part-of: trading-bot-observability
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trading-bot-kube-state-metrics
+subjects:
+  - kind: ServiceAccount
+    name: kube-state-metrics
+    namespace: kube-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-state-metrics
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/part-of: trading-bot-observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-state-metrics
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kube-state-metrics
+        app.kubernetes.io/part-of: trading-bot-observability
+    spec:
+      serviceAccountName: kube-state-metrics
+      containers:
+        - name: kube-state-metrics
+          image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.18.0
+          args:
+            - --resources=pods,nodes,namespaces,deployments,replicasets,statefulsets,daemonsets,resourcequotas,limitranges,persistentvolumeclaims
+            - --port=8080
+          ports:
+            - name: http-metrics
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: 20m
+              memory: 48Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http-metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http-metrics
+            initialDelaySeconds: 15
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-state-metrics
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/part-of: trading-bot-observability
+spec:
+  selector:
+    app.kubernetes.io/name: kube-state-metrics
+  ports:
+    - name: http-metrics
+      port: 8080
+      targetPort: http-metrics
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alloy-metrics
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/part-of: trading-bot-observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: trading-bot-alloy-metrics
+  labels:
+    app.kubernetes.io/part-of: trading-bot-observability
+rules:
+  # Read-only access to each node's kubelet metrics through the Kubernetes API proxy.
+  # cAdvisor labels every container metric with its namespace, including
+  # trading-bot-testing and trading-bot-measurement; no namespace selector is applied.
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: trading-bot-alloy-metrics
+  labels:
+    app.kubernetes.io/part-of: trading-bot-observability
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trading-bot-alloy-metrics
+subjects:
+  - kind: ServiceAccount
+    name: alloy-metrics
+    namespace: kube-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-node-metrics-config
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/part-of: trading-bot-observability
+data:
+  config.alloy: |-
+    logging {
+      level  = "info"
+      format = "logfmt"
+    }
+
+    prometheus.remote_write "grafana_cloud" {
+      external_labels = {
+        cluster = "trading-bot",
+      }
+
+      endpoint {
+        url = sys.env("GRAFANA_CLOUD_REMOTE_WRITE_URL")
+
+        basic_auth {
+          username = sys.env("GRAFANA_CLOUD_METRICS_USERNAME")
+          password = sys.env("GRAFANA_CLOUD_METRICS_TOKEN")
+        }
+      }
+    }
+
+    // Each DaemonSet Pod scrapes only the kubelet/cAdvisor endpoint of its own node.
+    prometheus.scrape "cadvisor" {
+      targets = [{
+        "__address__"      = "kubernetes.default.svc:443",
+        "__scheme__"       = "https",
+        "__metrics_path__" = "/api/v1/nodes/" + sys.env("NODE_NAME") + "/proxy/metrics/cadvisor",
+        "instance"         = sys.env("NODE_NAME"),
+        "job"              = "cadvisor",
+      }]
+
+      scrape_interval    = "30s"
+      scrape_timeout     = "10s"
+      bearer_token_file  = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+      forward_to         = [prometheus.remote_write.grafana_cloud.receiver]
+
+      tls_config {
+        ca_file    = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+        server_name = "kubernetes"
+      }
+    }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: alloy-node-metrics
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: alloy-node-metrics
+    app.kubernetes.io/part-of: trading-bot-observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alloy-node-metrics
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: alloy-node-metrics
+        app.kubernetes.io/part-of: trading-bot-observability
+    spec:
+      serviceAccountName: alloy-metrics
+      containers:
+        - name: alloy
+          image: grafana/alloy:v1.14.0
+          args:
+            - run
+            - --server.http.listen-addr=0.0.0.0:12345
+            - --storage.path=/var/lib/alloy/data
+            - --disable-reporting
+            - /etc/alloy/config.alloy
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: GRAFANA_CLOUD_REMOTE_WRITE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-cloud-metrics
+                  key: remote-write-url
+            - name: GRAFANA_CLOUD_METRICS_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-cloud-metrics
+                  key: username
+            - name: GRAFANA_CLOUD_METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-cloud-metrics
+                  key: token
+          ports:
+            - name: http
+              containerPort: 12345
+          resources:
+            requests:
+              cpu: 30m
+              memory: 64Mi
+            limits:
+              cpu: 150m
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alloy/config.alloy
+              subPath: config.alloy
+              readOnly: true
+            - name: storage
+              mountPath: /var/lib/alloy/data
+      volumes:
+        - name: config
+          configMap:
+            name: alloy-node-metrics-config
+        - name: storage
+          emptyDir:
+            sizeLimit: 512Mi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-cluster-metrics-config
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/part-of: trading-bot-observability
+data:
+  config.alloy: |-
+    logging {
+      level  = "info"
+      format = "logfmt"
+    }
+
+    prometheus.remote_write "grafana_cloud" {
+      external_labels = {
+        cluster = "trading-bot",
+      }
+
+      endpoint {
+        url = sys.env("GRAFANA_CLOUD_REMOTE_WRITE_URL")
+
+        basic_auth {
+          username = sys.env("GRAFANA_CLOUD_METRICS_USERNAME")
+          password = sys.env("GRAFANA_CLOUD_METRICS_TOKEN")
+        }
+      }
+    }
+
+    // A single replica prevents duplicate kube-state-metrics samples. Its
+    // cluster-scoped discovery includes trading-bot-testing and
+    // trading-bot-measurement without a namespace selector.
+    prometheus.scrape "kube_state_metrics" {
+      targets = [{
+        "__address__" = "kube-state-metrics.kube-system.svc:8080",
+        "instance"    = "kube-state-metrics",
+        "job"         = "kube-state-metrics",
+      }]
+
+      scrape_interval = "30s"
+      scrape_timeout  = "10s"
+      forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alloy-cluster-metrics
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: alloy-cluster-metrics
+    app.kubernetes.io/part-of: trading-bot-observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alloy-cluster-metrics
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: alloy-cluster-metrics
+        app.kubernetes.io/part-of: trading-bot-observability
+    spec:
+      serviceAccountName: alloy-metrics
+      containers:
+        - name: alloy
+          image: grafana/alloy:v1.14.0
+          args:
+            - run
+            - --server.http.listen-addr=0.0.0.0:12345
+            - --storage.path=/var/lib/alloy/data
+            - --disable-reporting
+            - /etc/alloy/config.alloy
+          env:
+            - name: GRAFANA_CLOUD_REMOTE_WRITE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-cloud-metrics
+                  key: remote-write-url
+            - name: GRAFANA_CLOUD_METRICS_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-cloud-metrics
+                  key: username
+            - name: GRAFANA_CLOUD_METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-cloud-metrics
+                  key: token
+          ports:
+            - name: http
+              containerPort: 12345
+          resources:
+            requests:
+              cpu: 20m
+              memory: 48Mi
+            limits:
+              cpu: 100m
+              memory: 160Mi
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alloy/config.alloy
+              subPath: config.alloy
+              readOnly: true
+            - name: storage
+              mountPath: /var/lib/alloy/data
+      volumes:
+        - name: config
+          configMap:
+            name: alloy-cluster-metrics-config
+        - name: storage
+          emptyDir:
+            sizeLimit: 512Mi

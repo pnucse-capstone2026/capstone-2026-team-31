@@ -1,0 +1,80 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgresql-credentials
+  namespace: trading-bot-testing
+type: Opaque
+stringData:
+  POSTGRES_USER: "luigi"
+  POSTGRES_PASSWORD: "1234"
+  POSTGRES_DB: "accounts"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgresql-init
+  namespace: trading-bot-testing
+data:
+  01-create-databases.sql: |
+    SELECT 'CREATE DATABASE orders'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'orders')\gexec
+
+    SELECT 'CREATE DATABASE pnl_measurement'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'pnl_measurement')\gexec
+
+    SELECT 'CREATE DATABASE direction_evaluation_measurement'
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'direction_evaluation_measurement')\gexec
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql
+  namespace: trading-bot-testing
+spec:
+  clusterIP: None
+  selector:
+    app: postgresql
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgresql
+  namespace: trading-bot-testing
+spec:
+  serviceName: postgresql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgresql
+  template:
+    metadata:
+      labels:
+        app: postgresql
+    spec:
+      containers:
+        - name: postgresql
+          image: postgres:17-alpine
+          ports:
+            - name: postgresql
+              containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: postgresql-credentials
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: postgresql-init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+      volumes:
+        - name: postgresql-init
+          configMap:
+            name: postgresql-init

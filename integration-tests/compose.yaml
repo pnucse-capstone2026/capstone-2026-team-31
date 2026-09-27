@@ -1,0 +1,48 @@
+name: trading-bot-integration
+
+services:
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    environment:
+      RABBITMQ_DEFAULT_USER: it_user
+      RABBITMQ_DEFAULT_PASS: it_password_only
+      RABBITMQ_DEFAULT_VHOST: integration
+    ports:
+      - "15673:15672"
+      - "5673:5672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: accounts_it
+      POSTGRES_USER: accounts_it
+      POSTGRES_PASSWORD: accounts_password_only
+    ports:
+      - "15432:5432"
+    volumes:
+      - ./postgres/01-create-order-execution-db.sh:/docker-entrypoint-initdb.d/01-create-order-execution-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U accounts_it -d accounts_it"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  order-execution-migration:
+    image: flyway/flyway:12.4.0
+    profiles: ["migration"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - -connectRetries=30
+      - -url=jdbc:postgresql://postgres:5432/order_execution_it
+      - -user=accounts_it
+      - -password=accounts_password_only
+      - migrate
+    volumes:
+      - ../order-execution-persister/src/main/resources/db/migration:/flyway/sql:ro

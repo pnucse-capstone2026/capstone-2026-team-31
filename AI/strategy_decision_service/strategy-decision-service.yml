@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: strategy-decision-service
+  namespace: trading-bot-testing
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: strategy-decision-service
+  template:
+    metadata:
+      name: strategy-decision-service
+      labels:
+        app: strategy-decision-service
+    spec:
+      containers:
+        - name: strategy-decision-service
+          image: luigisr03/strategy-decision-service:1.0.0
+          imagePullPolicy: Always
+          env:
+            - name: RABBITMQ_HOST
+              value: rabbitmq
+            - name: RABBITMQ_PORT
+              value: "5672"
+            - name: RABBITMQ_USER
+              value: trading-bot-dev
+            - name: RABBITMQ_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: news-ingestion-service-secret
+                  key: SPRING_RABBITMQ_PASSWORD
+            - name: RABBITMQ_VHOST
+              value: trading-bot-vhost
+            - name: ACCOUNT_SERVICE_BASE_URL
+              value: http://account-service:8080

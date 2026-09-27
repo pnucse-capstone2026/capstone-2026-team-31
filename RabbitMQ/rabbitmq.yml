@@ -1,0 +1,155 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rabbitmq-definitions
+  namespace: trading-bot-testing
+type: Opaque
+stringData:
+  definitions.json: |
+    {
+      "users": [
+        {
+          "name": "luigi",
+          "password_hash": "bHVpZzjVZ3SsFxqIQwvO47pPIt+UZ1RQ/+TCMcZgBuQCI8Lw",
+          "tags": ["administrator"]
+        },
+        {
+          "name": "trading-bot-admin",
+          "password_hash": "bHVpZzjVZ3SsFxqIQwvO47pPIt+UZ1RQ/+TCMcZgBuQCI8Lw",
+          "tags": ["administrator"]
+        },
+        {
+          "name": "trading-bot-dev",
+          "password_hash": "bHVpZzjVZ3SsFxqIQwvO47pPIt+UZ1RQ/+TCMcZgBuQCI8Lw",
+          "tags": []
+        }
+      ],
+      "vhosts": [
+        {"name": "/"},
+        {"name": "trading-bot-vhost"}
+      ],
+      "permissions": [
+        {
+          "user": "luigi",
+          "vhost": "/",
+          "configure": ".*",
+          "write": ".*",
+          "read": ".*"
+        },
+        {
+          "user": "trading-bot-admin",
+          "vhost": "trading-bot-vhost",
+          "configure": ".*",
+          "write": ".*",
+          "read": ".*"
+        },
+        {
+          "user": "trading-bot-dev",
+          "vhost": "trading-bot-vhost",
+          "configure": ".*",
+          "write": ".*",
+          "read": ".*"
+        }
+      ],
+      "parameters": [],
+      "policies": [],
+      "queues": [
+        {"name": "market-data", "vhost": "trading-bot-vhost", "durable": true, "auto_delete": false, "arguments": {}},
+        {"name": "predictions", "vhost": "trading-bot-vhost", "durable": true, "auto_delete": false, "arguments": {}},
+        {"name": "measurement.market-ticks", "vhost": "trading-bot-vhost", "durable": true, "auto_delete": false, "arguments": {}},
+        {"name": "measurement.predictions", "vhost": "trading-bot-vhost", "durable": true, "auto_delete": false, "arguments": {}},
+        {"name": "measurement.executions", "vhost": "trading-bot-vhost", "durable": true, "auto_delete": false, "arguments": {}}
+        ,{"name": "alpaca-mock.broker-market-data", "vhost": "trading-bot-vhost", "durable": true, "auto_delete": false, "arguments": {}}
+      ],
+      "exchanges": [
+        {"name": "market-data-exchange", "vhost": "trading-bot-vhost", "type": "direct", "durable": true, "auto_delete": false, "internal": false, "arguments": {}},
+        {"name": "predictions-exchange", "vhost": "trading-bot-vhost", "type": "direct", "durable": true, "auto_delete": false, "internal": false, "arguments": {}},
+        {"name": "measurement-executions-exchange", "vhost": "trading-bot-vhost", "type": "direct", "durable": true, "auto_delete": false, "internal": false, "arguments": {}},
+        {"name": "broker-pricing-exchange", "vhost": "trading-bot-vhost", "type": "direct", "durable": true, "auto_delete": false, "internal": false, "arguments": {}}
+      ],
+      "bindings": [
+        {"source": "market-data-exchange", "vhost": "trading-bot-vhost", "destination": "market-data", "destination_type": "queue", "routing_key": "market-data", "arguments": {}},
+        {"source": "market-data-exchange", "vhost": "trading-bot-vhost", "destination": "measurement.market-ticks", "destination_type": "queue", "routing_key": "market-data", "arguments": {}},
+        {"source": "predictions-exchange", "vhost": "trading-bot-vhost", "destination": "predictions", "destination_type": "queue", "routing_key": "predictions", "arguments": {}},
+        {"source": "predictions-exchange", "vhost": "trading-bot-vhost", "destination": "measurement.predictions", "destination_type": "queue", "routing_key": "predictions", "arguments": {}},
+        {"source": "measurement-executions-exchange", "vhost": "trading-bot-vhost", "destination": "measurement.executions", "destination_type": "queue", "routing_key": "measurement.executions", "arguments": {}},
+        {"source": "market-data-exchange", "vhost": "trading-bot-vhost", "destination": "broker-pricing-exchange", "destination_type": "exchange", "routing_key": "market-data", "arguments": {}},
+        {"source": "broker-pricing-exchange", "vhost": "trading-bot-vhost", "destination": "alpaca-mock.broker-market-data", "destination_type": "queue", "routing_key": "market-data", "arguments": {}}
+      ]
+    }
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rabbitmq-config
+  namespace: trading-bot-testing
+data:
+  rabbitmq.conf: |
+    definitions.import_backend = local_filesystem
+    definitions.local.path = /etc/rabbitmq/definitions/definitions.json
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: trading-bot-testing
+spec:
+  clusterIP: None
+  selector:
+    app: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: 5672
+    - name: management
+      port: 15672
+      targetPort: 15672
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+  namespace: trading-bot-testing
+spec:
+  serviceName: rabbitmq
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: rabbitmq
+
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:management-alpine
+          imagePullPolicy: Always
+
+          ports:
+            - name: amqp
+              containerPort: 5672
+            - name: management
+              containerPort: 15672
+
+          volumeMounts:
+            - name: rabbitmq-definitions
+              mountPath: /etc/rabbitmq/definitions
+              readOnly: true
+            - name: rabbitmq-config
+              mountPath: /etc/rabbitmq/rabbitmq.conf
+              subPath: rabbitmq.conf
+              readOnly: true
+
+      volumes:
+        - name: rabbitmq-definitions
+          secret:
+            secretName: rabbitmq-definitions
+        - name: rabbitmq-config
+          configMap:
+            name: rabbitmq-config

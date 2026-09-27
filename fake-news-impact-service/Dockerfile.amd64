@@ -1,0 +1,13 @@
+# syntax=docker/dockerfile:1.7
+# Build with Docker Buildx using --platform=linux/amd64 to produce an image
+# compatible with Linux x86_64 hosts.
+FROM --platform=linux/amd64 python:3.13-slim
+
+WORKDIR /fake-news-impact-service
+
+COPY fake-news-impact-service-requirements.txt .
+RUN pip install --no-cache-dir -r fake-news-impact-service-requirements.txt
+
+COPY fake-news-impact-service.py .
+
+ENTRYPOINT ["python3", "fake-news-impact-service.py"]

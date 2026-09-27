@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: price-prediction-service
+  namespace: trading-bot-testing
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: price-prediction-service
+  template:
+    metadata:
+      labels:
+        app: price-prediction-service
+    spec:
+      containers:
+        - name: price-prediction-service
+          image: luigisr03/price-prediction-service:test
+          imagePullPolicy: Always
+          resources:
+            limits:
+              memory: 2Gi
+          env:
+            - name: RABBITMQ_HOST
+              value: rabbitmq
+            - name: RABBITMQ_PORT
+              value: "5672"
+            - name: RABBITMQ_USER
+              value: trading-bot-dev
+            - name: RABBITMQ_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: news-ingestion-service-secret
+                  key: SPRING_RABBITMQ_PASSWORD
+            - name: RABBITMQ_VHOST
+              value: trading-bot-vhost

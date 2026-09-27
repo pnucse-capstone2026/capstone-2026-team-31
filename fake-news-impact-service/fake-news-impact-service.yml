@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-news-impact-service
+  namespace: trading-bot-testing
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fake-news-impact-service
+  template:
+    metadata:
+      name: fake-news-impact-service
+      labels:
+        app: fake-news-impact-service
+    spec:
+      containers:
+        - name: fake-news-impact-service
+          image: luigisr03/fake-news-impact-service:business-logic-v1
+          imagePullPolicy: Always
+          env:
+            - name: RABBITMQ_HOST
+              value: rabbitmq
+            - name: RABBITMQ_PORT
+              value: "5672"
+            - name: RABBITMQ_VHOST
+              value: "trading-bot-vhost"
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: news-ingestion-service-secret
+                  key: SPRING_RABBITMQ_PASSWORD

@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: news-impact-service
+  namespace: trading-bot-testing
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: news-impact-service
+  template:
+    metadata:
+      labels:
+        app: news-impact-service
+    spec:
+      containers:
+        - name: news-impact-service
+          image: luigisr03/news-impact-service:1.0.0
+          imagePullPolicy: Always
+          resources:
+            limits:
+              memory: 2Gi
+          ports:
+            - containerPort: 8000
+          env:
+            - name: RABBITMQ_HOST
+              value: rabbitmq
+            - name: RABBITMQ_PORT
+              value: "5672"
+            - name: RABBITMQ_USER
+              value: trading-bot-dev
+            - name: RABBITMQ_VHOST
+              value: trading-bot-vhost
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: news-ingestion-service-secret
+                  key: SPRING_RABBITMQ_PASSWORD
